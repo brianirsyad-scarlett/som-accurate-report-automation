@@ -34,7 +34,11 @@ Get-ChildItem $backup -File | Where-Object { $_.LastWriteTime -lt (Get-Date).Add
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 foreach ($b in $books) { Copy-Item $b (Join-Path $backup ("{0} {1}.xlsx" -f [IO.Path]::GetFileNameWithoutExtension($b), $stamp)) }
 
+# Note which Excel processes exist first, so the cleanup below can end only the
+# instance this script starts - never a workbook someone has open.
+$before = @(Get-Process EXCEL -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 $excel = New-Object -ComObject Excel.Application
+$ours = @(Get-Process EXCEL -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id } | ForEach-Object { $_.Id })
 $excel.Visible = $false
 $excel.DisplayAlerts = $false
 $excel.AskToUpdateLinks = $false
@@ -58,6 +62,8 @@ try {
         foreach ($ws in $wb.Worksheets) { foreach ($lo in $ws.ListObjects) { $rows += $lo.ListRows.Count } }
         $wb.Save()
         $wb.Close($true)
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($wb)
+        $wb = $null
         "$(Get-Date -Format 'HH:mm:ss')  Refreshed $name - $('{0:N0}' -f $rows) rows"
     }
 }
@@ -66,10 +72,19 @@ catch {
     "$(Get-Date -Format 'HH:mm:ss')  ERROR $($_.Exception.Message)"
 }
 finally {
-    $excel.Quit()
-    [void][Runtime.InteropServices.Marshal]::ReleaseComObject($excel)
+    # Under Task Scheduler the first version hung here: Excel stayed alive holding
+    # COM references, and waiting on finalizers never returned, so the task sat in
+    # "Running" and would have blocked the next night's trigger. Release, quit, and
+    # if our Excel is still there after a few seconds, end it.
+    foreach ($o in @($conn, $lo, $ws, $wb)) {
+        if ($o -ne $null) { try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($o) } catch { } }
+    }
+    try { $excel.Quit() } catch { }
+    try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($excel) } catch { }
+    $excel = $null
     [GC]::Collect()
-    [GC]::WaitForPendingFinalizers()
+    Start-Sleep -Seconds 5
+    foreach ($id in $ours) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
 }
 Stop-Transcript | Out-Null
 if ($failed) { exit 1 }

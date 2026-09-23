@@ -41,7 +41,7 @@ jobs:
         env:
           ACCURATE_EMAIL: ${{ secrets.ACCURATE_EMAIL }}
           ACCURATE_PASSWORD: ${{ secrets.ACCURATE_PASSWORD }}
-          ACCURATE_DB_NAME: ${{ vars.ACCURATE_DB_NAME || 'Bintang' }}
+          ACCURATE_DB_NAME: ${{ secrets.ACCURATE_DB_NAME || vars.ACCURATE_DB_NAME || 'Bintang' }}
         run: |
           args=()
           IFS=',' read -ra months <<< "${{ inputs.months || 'prev,current' }}"

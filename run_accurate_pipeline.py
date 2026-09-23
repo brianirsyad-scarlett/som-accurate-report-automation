@@ -70,7 +70,7 @@ def download(months: list[tuple[int, int]], bucket, today: dt.date) -> None:
                             os.environ.get("ACCURATE_DEVICE_ID", "A-som-github-accurate-pipeline"))
     client.login()
     db = client.open_database(os.environ.get("ACCURATE_DB_NAME", "Bintang"))
-    print(f"opened database {db.get('name')!r} on {client.host}")
+    print(f"opened database {db.get('alias') or db.get('name')!r} on {client.host}")
     for year, month in months:
         start = dt.date(year, month, 1)
         end = min(dt.date(year, month, calendar.monthrange(year, month)[1]), today)

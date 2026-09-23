@@ -10,7 +10,9 @@ Login (account.accurate.id):
 
 Database:
     POST /manage/database-list.do                                  -> d.dbList[]
-    GET  {host}/accurate/open.do?uid={uniqueId}&product=aol        -> session, _dsi/_usi
+    GET  {host}/accurate/open.do?uid={uniqueId}&product=aol        -> SAML auto-submit forms
+    POST {host}/accurate/open-database.do  uid, product            -> dsi
+    POST {host}/accurate/init.do           _dsi                    -> page with _usi, reportHost
 
 Report ({report host}/accurate/...):
     POST report/init-report-input.do   id, planId, _dsi             -> d.reportInput
@@ -22,6 +24,7 @@ Report ({report host}/accurate/...):
 from __future__ import annotations
 
 import base64
+import html
 import json
 import re
 import time
@@ -102,9 +105,11 @@ class AccurateClient:
 
     def open_database(self, name_contains: str) -> dict:
         dbs = self.databases()
-        match = [d for d in dbs if name_contains.lower() in str(d.get("name", "")).lower()]
+        def label(d):  # the list shows a database's "alias"; older payloads used "name"
+            return d.get("alias") or d.get("name") or d.get("companyName") or ""
+        match = [d for d in dbs if name_contains.lower() in str(label(d)).lower()]
         if len(match) != 1:
-            names = [d.get("name") for d in dbs]
+            names = [label(d) for d in dbs]
             raise AccurateError(f"Expected one database matching {name_contains!r}, found {len(match)}: {names}")
         db = match[0]
         if db.get("host"):
@@ -115,17 +120,65 @@ class AccurateClient:
         r = self.s.get(url + "&product=aol", headers={"Referer": ACCOUNT + "/manage"},
                        timeout=self.timeout, allow_redirects=True)
         r.raise_for_status()
+        r = self._follow_autosubmit_forms(r)
         final = urlsplit(r.url)
         self.host = f"{final.scheme}://{final.netloc}"
-        self._find_session_ids(r)
+        # The loading page then calls open-database.do (retrying while the server
+        # says errorTimeout, i.e. still opening) and goes to /accurate/?_dsi=<dsi>.
+        deadline = time.time() + 300
+        while True:
+            od = self._post_json(self.host + "/accurate/open-database.do",
+                                 {"uid": db["uniqueId"], "product": "aol"}, referer=r.url)
+            if not od.get("errorTimeout"):
+                break
+            if time.time() > deadline:
+                raise AccurateError("database still opening after 5 minutes")
+            time.sleep(3)
+        if od.get("expired"):
+            raise AccurateError("Accurate says this database licence has expired")
+        if not od.get("dsi"):
+            raise AccurateError(f"open-database.do returned no dsi (keys: {sorted(od)})")
+        r = self.s.get(self.host + "/accurate/", params={"_dsi": od["dsi"]},
+                       headers={"Referer": r.url}, timeout=self.timeout)
+        r.raise_for_status()
+        # The app shell then loads the "accurate__init" view (POST init.do); that
+        # server-rendered view is where _usi and the report host are written.
+        r = self.s.post(self.host + "/accurate/init.do",
+                        data={"moduleKey": "", "moduleParam": "null", "_dsi": od["dsi"], "hash": ""},
+                        headers={"X-Requested-With": "XMLHttpRequest", "Referer": r.url, "Origin": self.host},
+                        timeout=self.timeout)
+        r.raise_for_status()
+        self._find_session_ids(r, dsi=od["dsi"])
         return db
 
-    def _find_session_ids(self, r: requests.Response) -> None:
+    def _follow_autosubmit_forms(self, r: requests.Response, max_hops: int = 6) -> requests.Response:
+        """open.do answers with SAML single sign-on: a page whose only job is to
+        auto-submit a hidden form (SAMLRequest to account.accurate.id/idp/sso, then
+        SAMLResponse back to the database host). Submit each one, as the browser's
+        body onload does, until a real page comes back."""
+        for _ in range(max_hops):
+            text = r.text
+            if "document.forms[0].submit()" not in text and "SAMLRe" not in text:
+                return r
+            form = re.search(r"<form[^>]*action=\"([^\"]+)\"[^>]*>(.*?)</form>", text, re.S | re.I)
+            if not form:
+                return r
+            action = html.unescape(form.group(1))
+            fields = {html.unescape(n): html.unescape(v) for n, v in re.findall(
+                r"<input[^>]*type=\"hidden\"[^>]*name=\"([^\"]+)\"[^>]*value=\"([^\"]*)\"", form.group(2), re.I)}
+            r = self.s.post(action, data=fields, headers={"Referer": r.url},
+                            timeout=self.timeout, allow_redirects=True)
+            r.raise_for_status()
+        raise AccurateError("Too many single sign-on hops while opening the database")
+
+    def _find_session_ids(self, r: requests.Response, dsi: str | None = None) -> None:
         """The dashboard carries the _dsi/_usi session ids that every later call
         posts. Look for them in the final URL, the page, and the cookies."""
         text = r.text
-        found = {}
+        found = {"_dsi": dsi} if dsi else {}
         for name in ("_dsi", "_usi"):
+            if name in found:
+                continue
             pats = [rf"[?&]{name}=([^&#\s\"']+)",
                     rf"['\"]?{name}['\"]?\s*[:=]\s*['\"]([^'\"]+)['\"]"]
             for src in (r.url, text):

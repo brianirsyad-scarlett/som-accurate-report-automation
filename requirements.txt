@@ -1,0 +1,6 @@
+requests>=2.31
+polars==1.44.2
+fastexcel==0.21.0
+python-calamine==0.8.2
+openpyxl==3.1.5
+google-cloud-storage>=2.14

@@ -1,0 +1,49 @@
+name: Accurate Report Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      months:
+        description: "Months to download: YYYY-MM, prev or current, comma-separated"
+        default: "prev,current"
+        required: true
+  schedule:
+    # 00:45 WIB (UTC+7) = 17:45 UTC. GitHub may start scheduled runs late; the
+    # Sell In chain waits for this output instead of assuming the time.
+    - cron: "45 17 * * *"
+
+env:
+  TZ: Asia/Jakarta
+  GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/gcp_key.json
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  accurate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write GCS credentials from secret
+        run: |
+          cat <<'EOF' > gcp_key.json
+          ${{ secrets.GCP_SA_KEY }}
+          EOF
+
+      - name: Download from Accurate, rebuild Accurate <year>.xlsx and 0. 2025 Accurate.xlsx
+        env:
+          ACCURATE_EMAIL: ${{ secrets.ACCURATE_EMAIL }}
+          ACCURATE_PASSWORD: ${{ secrets.ACCURATE_PASSWORD }}
+          ACCURATE_DB_NAME: ${{ vars.ACCURATE_DB_NAME || 'Bintang' }}
+        run: |
+          args=()
+          IFS=',' read -ra months <<< "${{ inputs.months || 'prev,current' }}"
+          for m in "${months[@]}"; do args+=(--month "$(echo "$m" | xargs)"); done
+          python -u run_accurate_pipeline.py "${args[@]}"

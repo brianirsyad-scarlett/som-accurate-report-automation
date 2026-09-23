@@ -16,14 +16,21 @@ $backup = Join-Path $repo "work\local_backups"
 $books  = @("$folder\Accurate 2026.xlsx", "$folder\0. 2025 Accurate.xlsx")   # order matters
 $env:PYTHONIOENCODING = "utf-8"
 
+# A scheduled run has no window, so keep a dated log (last 30 days).
+$logDir = Join-Path $repo "work\logs"
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+Get-ChildItem $logDir -Filter "run_*.log" | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } | Remove-Item -Force
+Start-Transcript -Path (Join-Path $logDir ("run_{0}.log" -f (Get-Date -Format "yyyyMMdd_HHmmss"))) | Out-Null
+
 # --- 1. download ----------------------------------------------------------
 $pyArgs = @("$repo\local\download_to_folder.py")
 foreach ($m in ($Month | ForEach-Object { $_ -split "[,;]" } | Where-Object { $_ })) { $pyArgs += @("--month", $m.Trim()) }
 & $python @pyArgs
-if ($LASTEXITCODE -ne 0) { "Download failed (exit $LASTEXITCODE) - workbooks not refreshed."; exit 1 }
+if ($LASTEXITCODE -ne 0) { "Download failed (exit $LASTEXITCODE) - workbooks not refreshed."; Stop-Transcript | Out-Null; exit 1 }
 
 # --- 2+3. refresh in Excel ------------------------------------------------
 New-Item -ItemType Directory -Force -Path $backup | Out-Null
+Get-ChildItem $backup -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } | Remove-Item -Force
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 foreach ($b in $books) { Copy-Item $b (Join-Path $backup ("{0} {1}.xlsx" -f [IO.Path]::GetFileNameWithoutExtension($b), $stamp)) }
 
@@ -64,5 +71,6 @@ finally {
     [GC]::Collect()
     [GC]::WaitForPendingFinalizers()
 }
+Stop-Transcript | Out-Null
 if ($failed) { exit 1 }
 exit 0

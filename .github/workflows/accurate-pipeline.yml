@@ -7,6 +7,7 @@ on:
         description: "Months to download: YYYY-MM, prev or current, comma-separated"
         default: "prev,current"
         required: true
+  # On time: Power Automate 'GitHub timer' -> dispatch.yml. Cron = backup only.
   schedule:
     # 00:45 WIB (UTC+7) = 17:45 UTC. GitHub may start scheduled runs late; the
     # Sell In chain waits for this output instead of assuming the time.
@@ -18,7 +19,26 @@ env:
   PYTHONIOENCODING: utf-8
 
 jobs:
+  # Backup (cron) runs skip themselves when the on-time run started by
+  # dispatch.yml (Power Automate "GitHub timer") already did the work - guard.sh.
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run: ${{ steps.g.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: g
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash guard.sh accurate-pipeline.yml day
+
   accurate:
+    needs: guard
+    if: needs.guard.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

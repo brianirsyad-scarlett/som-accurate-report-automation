@@ -18,6 +18,11 @@ env:
   GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/gcp_key.json
   PYTHONIOENCODING: utf-8
 
+permissions:
+  contents: read
+  actions: read
+  issues: write   # failure mail = a MAIL| issue; Power Automate mails it
+
 jobs:
   # Backup (cron) runs skip themselves when the on-time run started by
   # dispatch.yml (Power Automate "GitHub timer") already did the work - guard.sh.
@@ -88,3 +93,10 @@ jobs:
           IFS=',' read -ra months <<< "${{ inputs.months || 'prev,current' }}"
           for m in "${months[@]}"; do args+=(--month "$(echo "$m" | xargs)"); done
           python -u run_accurate_pipeline.py "${args[@]}"
+
+      - name: Mail on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" --assignee brianirsyad-scarlett             --title "MAIL|Accurate pipeline failed"             --body "A step failed - see the run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
